@@ -27,7 +27,7 @@ from  database_service.database import (
 )
 
 from  session_service.current_session import current_session
-from  processing.pdf_utils import extract_text_from_pdf
+from  processing.pdf_utils import extract_text_from_document
 from  llm_service.llm import (
     extract_skills_from_jd,
 )
@@ -79,7 +79,7 @@ async def upload_jd(
     file: UploadFile = File(... , description="The pdf format of Job Description")
 ):
 
-    if not file.filename.lower().endswith(".pdf"):
+    if not (file.filename.lower().endswith(".pdf") or file.filename.lower().endswith(".docx")):
         raise HTTPException(
             status_code=400,
             detail="Only PDF Job Descriptions are supported."
@@ -87,7 +87,7 @@ async def upload_jd(
 
     pdf_bytes = await file.read()
 
-    jd_text = extract_text_from_pdf(pdf_bytes)
+    jd_text = extract_text_from_document(file.filename , pdf_bytes)
 
     if not jd_text.strip():
         raise HTTPException(
@@ -135,6 +135,8 @@ async def upload_cv(
         filename.endswith(".pdf")
         or
         filename.endswith(".zip")
+        or 
+        filename.endswith(".docx")
     ):
         raise HTTPException(
             status_code=400,
@@ -153,7 +155,7 @@ async def upload_cv(
                 if (
                     not f.is_dir()
                     and
-                    f.filename.lower().endswith(".pdf")
+                    (f.filename.lower().endswith(".pdf") or f.filename.lower().endswith(".docx"))
                 )
             ]
 

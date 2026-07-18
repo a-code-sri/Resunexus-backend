@@ -4,15 +4,12 @@ import fitz
 import pdfplumber
 import PyPDF2
 
+from docx import Document
+
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     """
-    Extracts all text from a PDF.
-
-    Parameters
-    ----------
-    pdf_bytes : bytes
-        Raw PDF bytes.
+    Extract text from a PDF using multiple fallback libraries.
 
     Returns
     -------
@@ -22,12 +19,9 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     Raises
     ------
     RuntimeError
-        If no supported PDF parser can extract text.
+        If no parser can successfully extract text.
     """
 
-    # ==========================================================
-    # First Attempt : PyMuPDF (Most Reliable)
-    # ==========================================================
 
     try:
 
@@ -56,9 +50,6 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
         pass
 
 
-    # ==========================================================
-    # Second Attempt : pdfplumber
-    # ==========================================================
 
     try:
 
@@ -82,10 +73,6 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
         pass
 
 
-    # ==========================================================
-    # Third Attempt : PyPDF2
-    # ==========================================================
-
     try:
 
         reader = PyPDF2.PdfReader(
@@ -104,7 +91,6 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
                     pages.append(text)
 
             except Exception:
-                # Skip only the corrupted page
                 continue
 
         result = "\n".join(pages).strip()
@@ -116,12 +102,79 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
         pass
 
 
-    # ==========================================================
-    # Nothing worked
-    # ==========================================================
-
     raise RuntimeError(
         "Unable to extract text from the uploaded PDF. "
         "The document may be scanned, encrypted, corrupted, "
         "or use unsupported font encodings."
+    )
+
+
+def extract_text_from_docx(docx_bytes: bytes) -> str:
+    """
+    Extract text from a DOCX document.
+    """
+
+    try:
+
+        document = Document(
+            io.BytesIO(docx_bytes)
+        )
+
+        paragraphs = []
+
+        for para in document.paragraphs:
+
+            text = para.text.strip()
+
+            if text:
+                paragraphs.append(text)
+
+        # Extract text from tables too
+        for table in document.tables:
+
+            for row in table.rows:
+
+                cells = [
+                    cell.text.strip()
+                    for cell in row.cells
+                    if cell.text.strip()
+                ]
+
+                if cells:
+                    paragraphs.append(" ".join(cells))
+
+        result = "\n".join(paragraphs).strip()
+
+        if result:
+            return result
+
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "Unable to extract text from the uploaded DOCX."
+    )
+
+
+def extract_text_from_document(
+    filename: str,
+    file_bytes: bytes
+) -> str:
+    """
+    Automatically dispatch extraction based on file extension.
+    Keeps the rest of the project independent of document type.
+    """
+
+    filename = filename.lower()
+
+    if filename.endswith(".pdf"):
+
+        return extract_text_from_pdf(file_bytes)
+
+    if filename.endswith(".docx"):
+
+        return extract_text_from_docx(file_bytes)
+
+    raise RuntimeError(
+        "Unsupported document type."
     )
