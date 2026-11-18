@@ -74,7 +74,9 @@ def score_cv_against_skills(
         "You are evaluating a candidate CV against a list of 10 required job skills.\n"
         "For each skill, assign a score from 0 to 10 based on semantic relevance.\n"
         "Consider synonyms, related tools and responsibilities.\n"
-        "For skills regarding education institutes/degrees or job roles/company experience make use of web.\n"
+        "For education-related skills, evaluate the degree and institution.\n"
+        "For company and work-experience skills, evaluate the employer, "
+        "job role, experience and responsibilities stated in the CV.\n"
         "Return JSON only."
     )
 
