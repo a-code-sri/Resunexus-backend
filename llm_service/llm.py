@@ -6,6 +6,7 @@ from typing import List, Tuple
 from  models.app_models import (
     JDExtractionOutput,
     CVScoreOutput,
+    CriterionScoreOutput,
 )
 from langchain_core.messages import (
     SystemMessage,
@@ -35,7 +36,8 @@ async def extract_skills_from_jd(
         "Apart from these 8 skills there will be two additional skills.\n"
         "One of them is exactly : 'Bachelors/Masters degree from premier institute'.\n"
         "The other one is exactly: 'Work experience in premier company in decent job role'.\n"
-        "Finally, return exactly 10 unique skills in JSON format ONLY, with no extra text."
+        "Finally, return exactly 10 unique skills in JSON format ONLY, with no extra text.\n"
+        "Do make use of any tool calling for any of the tasks mentioned above."
     )
 
     user_prompt = (
@@ -118,3 +120,44 @@ def score_cv_against_skills(
         )
 
     return scores, result.total_score
+
+
+
+def score_cv_for_criterion(
+    cv_text: str,
+    criterion: str
+) -> float:
+    """Score one CV against ONE criterion (0-10)."""
+
+    system_prompt = (
+        "You are evaluating a candidate CV against ONE required job criterion.\n"
+        "Assign a score from 0 to 10 based on semantic relevance.\n"
+        "Consider synonyms, related tools and responsibilities.\n"
+        "For education-related criteria, evaluate the degree and institution.\n"
+        "For company and work-experience criteria, evaluate the employer, "
+        "job role, experience and responsibilities stated in the CV.\n"
+        "Return JSON only."
+    )
+
+    user_prompt = (
+        "Required criterion:\n"
+        f"{criterion}\n\n"
+        "CV full text:\n"
+        "```text\n"
+        f"{cv_text}\n"
+        "```\n"
+        "Return JSON only."
+    )
+
+    structured_llm = llm.with_structured_output(
+        CriterionScoreOutput
+    )
+
+    result = structured_llm.invoke(
+        [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ]
+    )
+
+    return max(0.0, min(10.0, float(result.score)))

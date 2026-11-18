@@ -14,7 +14,8 @@ async def process_cv(filename : str ,pdf_bytes: str):
     result = result = ResumeResult(
         cv_name=filename,
         scores=scores,
-        total_score=total
+        total_score=total,
+        cv_text=cv_text
     )
 
     current_session.results.append(result)
@@ -26,5 +27,5 @@ async def process_cv(filename : str ,pdf_bytes: str):
 
         "message": "CV processed successfully.",
 
-        "results": [result.model_dump() for result in current_session.results]
+        "results": [result.model_dump(exclude={"cv_text"}) for result in current_session.results]
     }

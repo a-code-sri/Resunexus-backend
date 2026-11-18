@@ -8,6 +8,8 @@ class ResumeResultDB(BaseModel):
     scores: List[float]
 
     total_score: float
+
+    cv_text: str = ""
 class UserSessionDB(BaseModel):
 
     jd_name: str = ""

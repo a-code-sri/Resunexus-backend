@@ -25,7 +25,9 @@ async def sync_session_to_database(
 
                 scores=list(result.scores),
 
-                total_score=result.total_score
+                total_score=result.total_score,
+
+                cv_text=result.cv_text
 
             )
 
@@ -84,6 +86,8 @@ async def load_session_from_database(
             scores=result.scores,
 
             total_score=result.total_score,
+
+            cv_text=result.cv_text,
 
         )
 

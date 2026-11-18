@@ -20,10 +20,23 @@ class CVScoreOutput(BaseModel):
     total_score: float
 
 
+class CriterionScoreOutput(BaseModel):
+    score: float
+
+
 class ResumeResult(BaseModel):
     cv_name: str
     scores: List[float]
     total_score: float
+    # Raw resume text, kept server-side so a single criterion can be
+    # re-scored later without re-uploading. Never sent to the frontend.
+    cv_text: str = ""
+
+
+class CriterionRequest(BaseModel):
+    criterion: str
+    # None -> add a new criterion; int -> change the criterion at that index
+    index: int | None = None
 
 
 class ProcessingStatus(BaseModel):

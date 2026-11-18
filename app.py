@@ -1,5 +1,6 @@
 import io
 import os
+import asyncio
 import zipfile
 import logging
 from io import BytesIO
@@ -30,7 +31,9 @@ from  session_service.current_session import current_session
 from  processing.pdf_utils import extract_text_from_document
 from  llm_service.llm import (
     extract_skills_from_jd,
+    score_cv_for_criterion,
 )
+from  models.app_models import CriterionRequest
 from  processing.file_processing import process_cv
 
 from  routes.auth_routes import router as auth_router
@@ -45,6 +48,19 @@ from fastapi import BackgroundTasks
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
+
+# Max parallel LLM calls when re-scoring one criterion across all resumes
+CRITERION_CONCURRENCY = 4
+
+
+def compute_total(scores, weights=None):
+    """Weighted average of per-criterion scores (equal weights by default)."""
+    if not scores:
+        return 0.0
+    if weights is None or len(weights) != len(scores) or sum(weights) <= 0:
+        return sum(scores) / len(scores)
+    return sum(s * w for s, w in zip(scores, weights)) / sum(weights)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -179,7 +195,7 @@ async def upload_cv(
             "message": "ZIP processed successfully.",
             "processed": current_session.status.processed,
             "results": [
-                r.model_dump()
+                r.model_dump(exclude={"cv_text"})
                 for r in current_session.results
             ]
         }
@@ -204,7 +220,7 @@ async def upload_cv(
     return {
         "message": "Resume processed successfully.",
         "results": [
-            r.model_dump()
+            r.model_dump(exclude={"cv_text"})
             for r in current_session.results
         ]
     }
@@ -234,14 +250,25 @@ def get_results(user = Depends(get_current_user)):
         "skills": current_session.skills,
 
         "rows": [
-            row.model_dump()
+            row.model_dump(exclude={"cv_text"})
             for row in sorted_results
         ]
     }
 
 
 @app.get("/download")
-def download_results(user=Depends(get_current_user)):
+def download_results(
+    weights: str | None = None,
+    user=Depends(get_current_user)
+):
+
+    parsed_weights = None
+
+    if weights:
+        try:
+            parsed_weights = [float(w) for w in weights.split(",")]
+        except ValueError:
+            parsed_weights = None
 
     if len(current_session.results) == 0:
 
@@ -270,11 +297,16 @@ def download_results(user=Depends(get_current_user)):
 
     )
 
+    totals = {
+        id(r): compute_total(r.scores, parsed_weights)
+        for r in current_session.results
+    }
+
     sorted_results = sorted(
 
         current_session.results,
 
-        key=lambda x: x.total_score,
+        key=lambda x: totals[id(x)],
 
         reverse=True
 
@@ -292,7 +324,7 @@ def download_results(user=Depends(get_current_user)):
 
             +
 
-            [result.total_score]
+            [round(totals[id(result)], 2)]
 
         )
 
@@ -318,6 +350,166 @@ def download_results(user=Depends(get_current_user)):
 
     )
 
+
+
+@app.post("/criteria")
+async def add_or_change_criterion(
+    request: CriterionRequest,
+    background_tasks: BackgroundTasks,
+    user = Depends(get_current_user)
+):
+    """
+    Add a new criterion (index=None) or change an existing one (index=i).
+    Only that one criterion is re-evaluated, for every resume currently
+    on the leaderboard. All-or-nothing: if any resume fails to score,
+    nothing is modified.
+    """
+
+    criterion = request.criterion.strip()
+
+    if not criterion:
+        raise HTTPException(status_code=400, detail="Criterion cannot be empty.")
+
+    if len(current_session.skills) == 0 or len(current_session.results) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Nothing to re-evaluate. Upload a JD and resumes first."
+        )
+
+    n = len(current_session.skills)
+
+    if request.index is None:
+        index = n
+    elif 0 <= request.index < n:
+        index = request.index
+    else:
+        raise HTTPException(status_code=400, detail="Invalid criterion index.")
+
+    for i, existing in enumerate(current_session.skills):
+        if i != index and existing.strip().lower() == criterion.lower():
+            raise HTTPException(
+                status_code=409,
+                detail="That criterion already exists."
+            )
+
+    missing_text = [
+        r.cv_name for r in current_session.results if not r.cv_text.strip()
+    ]
+
+    if missing_text:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Some resumes were evaluated before re-scoring was supported "
+                "and their text is not stored. Reset and re-upload the "
+                f"resumes to use this feature: {', '.join(missing_text[:5])}"
+            )
+        )
+
+    semaphore = asyncio.Semaphore(CRITERION_CONCURRENCY)
+
+    async def score_one(result):
+
+        async with semaphore:
+
+            for attempt in range(3):
+
+                try:
+                    return await asyncio.to_thread(
+                        score_cv_for_criterion,
+                        result.cv_text,
+                        criterion
+                    )
+                except Exception as exc:
+                    logging.warning(
+                        "Scoring %s failed (attempt %d): %s",
+                        result.cv_name, attempt + 1, exc
+                    )
+                    await asyncio.sleep(2 * (attempt + 1))
+
+        return None
+
+    results_snapshot = list(current_session.results)
+
+    new_scores = await asyncio.gather(
+        *[score_one(r) for r in results_snapshot]
+    )
+
+    failed = [
+        r.cv_name for r, s in zip(results_snapshot, new_scores) if s is None
+    ]
+
+    if failed:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Could not evaluate {len(failed)} resume(s); nothing was "
+                "changed. Please try again."
+            )
+        )
+
+    if index == n:
+        current_session.skills.append(criterion)
+    else:
+        current_session.skills[index] = criterion
+
+    for result, score in zip(results_snapshot, new_scores):
+
+        if index == n:
+            result.scores.append(score)
+        else:
+            result.scores[index] = score
+
+        result.total_score = compute_total(result.scores)
+
+    background_tasks.add_task(sync_session_to_database, current_session.email)
+
+    return {
+        "message": "Criterion evaluated successfully.",
+        "skills": current_session.skills,
+        "rows": [
+            r.model_dump(exclude={"cv_text"})
+            for r in current_session.results
+        ]
+    }
+
+
+@app.delete("/criteria/{index}")
+def remove_criterion(
+    index: int,
+    background_tasks: BackgroundTasks,
+    user = Depends(get_current_user)
+):
+    """Remove a criterion. No LLM calls: scores are simply dropped."""
+
+    if not (0 <= index < len(current_session.skills)):
+        raise HTTPException(status_code=400, detail="Invalid criterion index.")
+
+    if len(current_session.skills) <= 1:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one criterion must remain."
+        )
+
+    current_session.skills.pop(index)
+
+    for result in current_session.results:
+
+        if index < len(result.scores):
+            result.scores.pop(index)
+
+        result.total_score = compute_total(result.scores)
+
+    background_tasks.add_task(sync_session_to_database, current_session.email)
+
+    return {
+        "message": "Criterion removed.",
+        "skills": current_session.skills,
+        "rows": [
+            r.model_dump(exclude={"cv_text"})
+            for r in current_session.results
+        ]
+    }
 
 
 @app.post("/reset")
